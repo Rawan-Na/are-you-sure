@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Are you sure?</title>
+<style>
+  :root {
+    --cc-bg: rgba(0, 0, 0, 0.78);
+    --cc-text: #f2f2f2;
+    --var: #ffcc33;
+    --accent: #e23b3b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #000; color: #fff; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Tahoma, "Noto Sans Arabic", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* ---------- Video ---------- */
+  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+
+  /* ---------- CC bar ---------- */
+  #cc {
+    position: fixed; left: 0; right: 0; margin: 0 auto;
+    width: fit-content; max-width: min(92vw, 720px);
+    background: var(--cc-bg); color: var(--cc-text);
+    padding: 10px 16px; border-radius: 6px;
+    font-size: clamp(15px, 4.2vw, 22px); line-height: 1.5; text-align: center;
+    opacity: 0; transition: opacity .25s; pointer-events: none; z-index: 5;
+  }
+  #cc.show { opacity: 1; }
+  #cc .tag {
+    display: inline-block; font-size: .7em; font-weight: 700;
+    border: 1.5px solid currentColor; border-radius: 3px;
+    padding: 0 4px; margin-inline-end: 8px; vertical-align: middle; opacity: .8;
+  }
+  #cc .v { color: var(--var); font-weight: 700; }
+  /* separate positions for each language version */
+  .cc-pos-en { bottom: calc(12% + env(safe-area-inset-bottom)); }
+  .cc-pos-ar { bottom: calc(12% + env(safe-area-inset-bottom)); direction: rtl; }
+  @media (orientation: landscape) {
+    .cc-pos-en, .cc-pos-ar { bottom: calc(6% + env(safe-area-inset-bottom)); }
+  }
+
+  /* ---------- Overlays (start / end) ---------- */
+  .overlay {
+    position: fixed; inset: 0; z-index: 10;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 22px; padding: 24px; text-align: center;
+    background: radial-gradient(ellipse at center, #141414 0%, #000 75%);
+  }
+  .overlay.hidden { display: none; }
+  .overlay h1 { font-size: clamp(22px, 6vw, 34px); font-weight: 700; letter-spacing: .5px; }
+  .overlay p  { font-size: clamp(14px, 4vw, 18px); color: #bbb; max-width: 520px; line-height: 1.7; }
+  .btn {
+    appearance: none; border: 0; cursor: pointer;
+    background: var(--accent); color: #fff;
+    font-size: 18px; font-weight: 700; padding: 14px 40px; border-radius: 999px;
+  }
+  .hint { font-size: 13px; color: #777; }
+  #end ul { list-style: none; max-width: 520px; text-align: start; }
+  #end li { margin: 10px 0; color: #ddd; line-height: 1.6; font-size: clamp(14px, 3.8vw, 17px); }
+  #end li b { color: var(--var); }
+  #end .note { font-size: 13px; color: #888; border-top: 1px solid #333; padding-top: 14px; }
+  [dir="rtl"] #end ul { text-align: right; }
+
+  #tapPause { position: fixed; inset: 0; z-index: 4; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <video id="vid" playsinline webkit-playsinline preload="auto"></video>
+</div>
+<div id="tapPause"></div>
+<div id="cc"></div>
+
+<!-- Start screen: required so iOS/Android allow sound + speech -->
+<div id="start" class="overlay">
+  <h1 id="startTitle">🎧</h1>
+  <p id="startText"></p>
+  <button id="startBtn" class="btn"></button>
+  <span class="hint" id="startHint"></span>
+</div>
+
+<!-- End screen: the awareness message -->
+<div id="end" class="overlay hidden">
+  <h1 id="endTitle"></h1>
+  <ul id="endList"></ul>
+  <p class="note" id="endNote"></p>
+  <button id="replayBtn" class="btn"></button>
+</div>
+
+<script>
+/* =====================================================================
+   1) LANGUAGE
+   ===================================================================== */
+const LANG = (navigator.language || 'en').toLowerCase().startsWith('ar') ? 'ar' : 'en';
+document.documentElement.lang = LANG;
+document.documentElement.dir  = LANG === 'ar' ? 'rtl' : 'ltr';
+
+const VIDEO_SRC = { en: 'video_en.mp4', ar: 'video_ar.mp4' };
+
+/* =====================================================================
+   2) TIMELINE (seconds) — the silent gaps in each video
+   Each entry: start / end of the gap + which variable to speak.
+   EN timings measured from video_en. AR: fill in after measuring
+   video_ar (see the step-by-step guide).
+   ===================================================================== */
+const TIMELINE = {
+  en: [
+    { start:  1.1, end:  4.6, key: 'device'   }, // Hello [iPhone] User
+    { start:  7.6, end: 10.4, key: 'language' }, // I'm speaking to you in [English]
+    { start: 16.4, end: 22.0, key: 'city'     }, // how is the weather in [Dhahran]
+    { start: 23.0, end: 26.6, key: 'conn'     }, // and is your [Wi-Fi] connection running well?
+    { start: 33.1, end: 38.3, key: 'battery'  }, // your battery is currently at [80%]
+    { start: 44.2, end: 57.4, key: 'specs'    }, // did you know that your device has [...]
+  ],
+  ar: [
+    // measured from video_ar
+    { start:  1.1, end:  5.7, key: 'device'   }, // (هلا) [يا مستخدم الآيفون]
+    { start:  8.3, end: 10.3, key: 'language' }, // طبعاً أنا أكلمك بال[عربي]
+    { start: 15.1, end: 21.0, key: 'city'     }, // كيف الجو في [الظهران]
+    { start: 22.3, end: 26.5, key: 'conn'     }, // وهل النت [على الواي فاي] شغال كويس
+    { start: 34.0, end: 40.0, key: 'battery'  }, // بطاريتك حالياً [80٪]
+    { start: 44.0, end: 58.1, key: 'specs'    }, // ان جهازك [فيه ...]
+  ]
+};
+
+/* =====================================================================
+   3) UI TEXT
+   ===================================================================== */
+const UI = {
+  en: {
+    startText: 'Turn your sound on and watch until the end.',
+    startBtn: 'Start',
+    startHint: 'Tap the screen anytime to pause.',
+    endTitle: 'Nothing happened to your phone.',
+    endList: [
+      'Everything you just heard is <b>standard information</b> your browser shares with every website you open. It does <b>not</b> mean you were hacked.',
+      'Real hacking means access to what is <b>protected</b>: your SMS codes, your photo gallery, your camera or mic without permission.',
+      'If someone threatens you using details like these, <b>they are bluffing</b>. Do not pay, do not reply, report it.',
+      'And notice: a few seconds ago you <b>scanned a QR code you knew nothing about</b>. Next time, check before you open.'
+    ],
+    endNote: 'This page saved nothing and sent nothing. All details were read and shown on your own device only, apart from a single location lookup by IP. — IE Club, KFUPM',
+    replay: 'Watch again'
+  },
+  ar: {
+    startText: 'شغّل الصوت وشاهد حتى النهاية.',
+    startBtn: 'ابدأ',
+    startHint: 'اضغط على الشاشة في أي وقت للإيقاف.',
+    endTitle: 'لم يحدث شيء لجوالك.',
+    endList: [
+      'كل ما سمعته الآن <b>معلومات قياسية</b> يشاركها متصفحك مع أي موقع تفتحه، و<b>لا</b> تعني أن جهازك مخترق.',
+      'الاختراق الحقيقي هو الوصول إلى ما هو <b>محمي</b>: رسائل التحقق، ألبوم الصور، الكاميرا أو المايكروفون دون إذنك.',
+      'إذا هددك أحد بمعلومات كهذه، <b>فهو يخادعك</b>. لا تدفع، لا ترد، وبلّغ فوراً.',
+      'ولاحظ: قبل لحظات <b>مسحت رمز QR لا تعرف مصدره</b>. في المرة القادمة تحقّق قبل أن تفتح.'
+    ],
+    endNote: 'هذه الصفحة لم تحفظ ولم ترسل أي بيانات. كل المعلومات قُرئت وعُرضت على جهازك فقط، باستثناء طلب واحد لتحديد الموقع التقريبي عبر IP. — نادي الرياضات الذهنية والإلكترونية، KFUPM',
+    replay: 'شاهد مرة أخرى'
+  }
+}[LANG];
+
+/* =====================================================================
+   4) READING DEVICE INFO (nothing is stored or sent)
+   ===================================================================== */
+const ua = navigator.userAgent;
+const isIPad = /iPad/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+function getDevice() {
+  if (isIPad) return { en: 'iPad', ar: 'الآيباد' };
+  if (/iPhone/.test(ua)) return { en: 'iPhone', ar: 'الآيفون' };
+  if (/Android/.test(ua)) {
+    const m = ua.match(/Android[^;]*;\s*([^;)]+?)(\s+Build|\))/);
+    const model = m && m[1] && !/^K$/.test(m[1].trim()) ? m[1].trim() : '';
+    return { en: model || 'Android', ar: model || 'أندرويد' };
+  }
+  if (/Windows/.test(ua)) return { en: 'Windows', ar: 'ويندوز' };
+  if (/Mac/.test(ua)) return { en: 'Mac', ar: 'الماك' };
+  return { en: 'device', ar: 'الجهاز' };
+}
+
+function getOS() {
+  let m;
+  if ((m = ua.match(/OS (\d+)[._](\d+)/)) && (/iPhone|iPad/.test(ua) || isIPad)) return `iOS ${m[1]}.${m[2]}`;
+  if (isIPad) return 'iPadOS';
+  if ((m = ua.match(/Android (\d+(\.\d+)?)/))) return `Android ${m[1]}`;
+  if (/Windows/.test(ua)) return 'Windows';
+  if (/Mac OS X/.test(ua)) return 'macOS';
+  return 'Linux';
+}
+
+function getBrowser() {
+  if (/CriOS/.test(ua)) return 'Chrome';
+  if (/FxiOS|Firefox/.test(ua)) return 'Firefox';
+  if (/EdgiOS|Edg\//.test(ua)) return 'Edge';
+  if (/SamsungBrowser/.test(ua)) return 'Samsung Internet';
+  if (/OPR|Opera/.test(ua)) return 'Opera';
+  if (/Chrome/.test(ua)) return 'Chrome';
+  if (/Safari/.test(ua)) return 'Safari';
+  return 'browser';
+}
+
+function getLanguageName() {
+  const code = (navigator.language || 'en').split('-')[0];
+  try { return new Intl.DisplayNames([LANG], { type: 'language' }).of(code); }
+  catch (e) { return code; }
+}
+
+async function getCity() {
+  const withTimeout = (p, ms) => Promise.race([p, new Promise((_, r) => setTimeout(() => r('timeout'), ms))]);
+  // Two HTTPS services, the second is a backup
+  const services = [
+    async () => { const r = await fetch('https://ipapi.co/json/'); const j = await r.json(); return j.city; },
+    async () => { const r = await fetch('https://ipwho.is/');      const j = await r.json(); return j.city; }
+  ];
+  for (const s of services) {
+    try { const c = await withTimeout(s(), 3500); if (c) return c; } catch (e) {}
+  }
+  return null;
+}
+
+async function getBattery() {
+  try {
+    if (navigator.getBattery) {
+      const b = await navigator.getBattery();
+      return { pct: Math.round(b.level * 100), charging: b.charging };
+    }
+  } catch (e) {}
+  return null; // iPhone / Safari
+}
+
+function getConnection() {
+  const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (!c) return null; // iPhone / Safari
+  if (c.type === 'wifi') return 'Wi-Fi';
+  if (c.type === 'cellular') return (c.effectiveType || '').toUpperCase() || 'mobile data';
+  return c.effectiveType ? c.effectiveType.toUpperCase() : null;
+}
+
+function getLocalTime() {
+  const d = new Date();
+  if (LANG === 'ar') {
+    const h = d.getHours(), m = String(d.getMinutes()).padStart(2, '0');
+    const h12 = h % 12 || 12;
+    const period = h < 12 ? 'صباحاً' : (h < 18 ? 'عصراً' : 'مساءً');
+    return `${h12}:${m} ${period}`;
+  }
+  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+/* =====================================================================
+   5) BUILD THE LINES (cc = shown text with highlight, say = spoken)
+   ===================================================================== */
+const V = s => `<span class="v">${s}</span>`;
+const DATA = {};
+
+async function collectData() {
+  const dev = getDevice()[LANG];
+  const os = getOS(), browser = getBrowser();
+  const w = Math.round(screen.width * (window.devicePixelRatio || 1));
+  const h = Math.round(screen.height * (window.devicePixelRatio || 1));
+  const cores = navigator.hardwareConcurrency || null;
+  const mem = navigator.deviceMemory || null;     // not available on iPhone
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  const [city, battery] = await Promise.all([getCity(), getBattery()]);
+  const conn = getConnection();
+  const time = getLocalTime();
+
+  if (LANG === 'en') {
+    DATA.device   = { cc: `Hello ${V(dev)} user`, say: dev };
+    DATA.language = { cc: `I'm speaking to you in ${V(getLanguageName())}`, say: getLanguageName() };
+    DATA.city     = city
+      ? { cc: `How is the weather in ${V(city)}?`, say: city }
+      : { cc: `How is the weather ${V('where you are standing right now')}?`, say: 'where you are standing right now' };
+    DATA.conn     = conn
+      ? { cc: `Is your ${V(conn)} connection running well?`, say: conn }
+      : { cc: `Is your ${V('internet')} connection running well?`, say: 'internet' };
+    DATA.battery  = battery
+      ? { cc: `Your battery is currently at ${V(battery.pct + '%')}${battery.charging ? ' (charging)' : ''}`,
+          say: `${battery.pct} percent${battery.charging ? ', and charging' : ''}` }
+      : { cc: `Your battery is at ${V("a level I couldn't reach")}… but I know your clock says ${V(time)}`,
+          say: `somewhere I couldn't reach. But I do know your clock says ${time}` };
+    let specs = `a ${w} by ${h} screen`;
+    let specsCC = `a ${V(w + ' × ' + h)} screen`;
+    if (cores) { specs += `, ${cores} processor cores`; specsCC += `, ${V(cores + ' processor cores')}`; }
+    if (mem)   { specs += `, about ${mem} gigabytes of memory`; specsCC += `, ${V('~' + mem + ' GB RAM')}`; }
+    specs   += `, it runs ${os}, you are using ${browser}`;
+    specsCC += `, runs ${V(os)}, using ${V(browser)}`;
+    if (tz) { specs += `, and your time zone is ${tz.replace(/_/g, ' ').replace('/', ', ')}`; specsCC += `, time zone ${V(tz)}`; }
+    DATA.specs = { cc: `Your device has ${specsCC}`, say: specs };
+  } else {
+    // Saudi dialect, to match the video
+    DATA.device   = { cc: `يا مستخدم ${V(dev)}`, say: `يا مستخدم ${dev}` };
+    DATA.language = { cc: `أكلمك بالـ${V('عربي')}`, say: 'عربي' };
+    DATA.city     = city
+      ? { cc: `كيف الجو في ${V(city)}؟`, say: city }
+      : { cc: `كيف الجو ${V('في المكان اللي أنت فيه الحين')}؟`, say: 'في المكان اللي أنت فيه الحين' };
+    DATA.conn     = conn
+      ? { cc: `وهل النت ${V('على ' + (conn === 'Wi-Fi' ? 'الواي فاي' : conn))} شغال كويس؟`,
+          say: conn === 'Wi-Fi' ? 'على الواي فاي' : `على ${conn}` }
+      : { cc: `وهل النت ${V('عندك')} شغال كويس؟`, say: 'عندك' };
+    DATA.battery  = battery
+      ? { cc: `بطاريتك حالياً ${V(battery.pct + '٪')}${battery.charging ? ' (على الشاحن)' : ''}`,
+          say: `${battery.pct} بالمية${battery.charging ? '، وهي على الشاحن' : ''}` }
+      : { cc: `بطاريتك ${V('ما قدرنا نوصل لها')}، بس نعرف إن ساعة مشاهدتك هي ${V(time)}`,
+          say: `ما قدرنا نوصل لها، بس نعرف إن ساعة مشاهدتك هي ${time}` };
+    let specs = `فيه شاشة بدقة ${w} في ${h}`;
+    let specsCC = `فيه شاشة بدقة ${V(w + ' × ' + h)}`;
+    if (cores) { specs += `، و${cores} أنوية معالج`; specsCC += `، و${V(cores + ' أنوية معالج')}`; }
+    if (mem)   { specs += `، وذاكرة تقريباً ${mem} جيجا`; specsCC += `، وذاكرة ${V('~' + mem + 'GB')}`; }
+    specs   += `، ونظامه ${os}، وأنت تتصفح من ${browser}`;
+    specsCC += `، ونظامه ${V(os)}، وتتصفح من ${V(browser)}`;
+    DATA.specs = { cc: `إن جهازك ${specsCC}`, say: specs };
+  }
+}
+
+/* =====================================================================
+   6) SPEECH (Text-to-Speech)
+   ===================================================================== */
+const synth = window.speechSynthesis || null;
+let voice = null;
+
+function pickVoice() {
+  if (!synth) return;
+  const voices = synth.getVoices();
+  const want = LANG === 'ar' ? 'ar' : 'en';
+  voice = voices.find(v => v.lang && v.lang.toLowerCase().startsWith(want) && /male|maged|tarik|daniel|google/i.test(v.name))
+       || voices.find(v => v.lang && v.lang.toLowerCase().startsWith(want))
+       || null;
+}
+if (synth) { pickVoice(); synth.onvoiceschanged = pickVoice; }
+
+function unlockSpeech() {           // must run inside the tap (iOS)
+  if (!synth) return;
+  const u = new SpeechSynthesisUtterance(' ');
+  u.volume = 0;
+  synth.speak(u);
+}
+
+function speak(text) {
+  if (!synth || !voice) return;    // no voice for this language → CC only
+  synth.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.voice = voice; u.lang = voice.lang;
+  u.rate = 0.95; u.pitch = 0.8;     // a little slower and deeper = creepier
+  synth.speak(u);
+}
+
+/* =====================================================================
+   7) CC BAR
+   ===================================================================== */
+const cc = document.getElementById('cc');
+cc.classList.add(LANG === 'ar' ? 'cc-pos-ar' : 'cc-pos-en');
+function showCC(html) { cc.innerHTML = `<span class="tag">CC</span>${html}`; cc.classList.add('show'); }
+function hideCC() { cc.classList.remove('show'); }
+
+/* =====================================================================
+   8) SYNC WITH THE VIDEO (timeupdate, not setTimeout)
+   ===================================================================== */
+const vid = document.getElementById('vid');
+vid.src = VIDEO_SRC[LANG];
+const timeline = TIMELINE[LANG];
+let fired = new Set();
+let active = null;
+
+vid.addEventListener('timeupdate', () => {
+  const t = vid.currentTime;
+  const idx = timeline.findIndex(s => t >= s.start && t < s.end);
+  if (idx === -1) {
+    if (active !== null) { hideCC(); active = null; }
+    return;
+  }
+  if (idx !== active) {
+    active = idx;
+    const item = DATA[timeline[idx].key];
+    if (!item) return;
+    showCC(item.cc);
+    if (!fired.has(idx)) { fired.add(idx); speak(item.say); }
+  }
+});
+
+vid.addEventListener('pause',  () => { if (synth) synth.cancel(); });
+vid.addEventListener('seeked', () => { fired = new Set(); active = null; hideCC(); });
+vid.addEventListener('ended',  () => { hideCC(); showEnd(); });
+
+document.getElementById('tapPause').addEventListener('click', () => {
+  if (vid.ended) return;
+  vid.paused ? vid.play() : vid.pause();
+});
+
+/* =====================================================================
+   9) START / END SCREENS
+   ===================================================================== */
+document.getElementById('startText').textContent = UI.startText;
+document.getElementById('startBtn').textContent  = UI.startBtn;
+document.getElementById('startHint').textContent = UI.startHint;
+document.getElementById('endTitle').textContent  = UI.endTitle;
+document.getElementById('endList').innerHTML     = UI.endList.map(x => `<li>${x}</li>`).join('');
+document.getElementById('endNote').textContent   = UI.endNote;
+document.getElementById('replayBtn').textContent = UI.replay;
+
+const dataReady = collectData();   // starts collecting while the start screen shows
+
+document.getElementById('startBtn').addEventListener('click', async () => {
+  unlockSpeech();                  // inside the tap
+  const playing = vid.play();      // inside the tap
+  document.getElementById('start').classList.add('hidden');
+  try { await playing; } catch (e) { vid.muted = true; vid.play().catch(() => {}); }
+  await dataReady;
+});
+
+function showEnd() { document.getElementById('end').classList.remove('hidden'); }
+
+document.getElementById('replayBtn').addEventListener('click', () => {
+  document.getElementById('end').classList.add('hidden');
+  fired = new Set(); active = null;
+  unlockSpeech();
+  vid.currentTime = 0; vid.play();
+});
+</script>
+</body>
+</html>
